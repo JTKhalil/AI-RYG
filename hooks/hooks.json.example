@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" thinking"
+      }
+    ],
+    "afterAgentThought": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" thinking"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" thinking"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" thinking"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" thinking"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" error"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" error",
+        "matcher": "exit code [1-9]"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" done"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "python \"D:\\ESP32\\ai信号灯\\pc\\hook_bridge.py\" off"
+      }
+    ]
+  }
+}
