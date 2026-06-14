@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+pc/build/
+pc/dist/
+
+# 本地运行状态 / 用户配置
+pc/config.json
+pc/hook.log
+pc/run_hook.cmd
+pc/.last_thinking
+pc/.light_state.json
+pc/.light_state.lock
+pc/.serial.lock
+pc/daemon.pid
+
+# 由 scripts/process_icon.py 生成
+pc/assets/tray_icon.ico
+pc/assets/tray_icon.png
+
+# IDE / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini

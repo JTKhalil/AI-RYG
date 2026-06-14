@@ -76,7 +76,7 @@ cd AI-RYG
 .\scripts\build_exe.ps1
 ```
 
-产物位于 `pc/dist/`：
+产物位于 `pc/dist/`（已加入 `.gitignore`，需本地构建）：
 
 | 文件 | 说明 |
 |------|------|
@@ -84,6 +84,8 @@ cd AI-RYG
 | `CodingLightHook/` | Hook 可执行文件目录 |
 | `CodingLightUninstall.exe` | 卸载程序 |
 | `CodingLightSetup.exe` | 图形化安装包（分发给用户） |
+
+> 图标由 `scripts/process_icon.py` 从 `pc/assets/icon_source.png` 生成，打包脚本会自动处理。
 
 ### 发布新版本（GitHub Releases）
 
