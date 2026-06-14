@@ -80,10 +80,10 @@ cd AI-RYG
 
 | 文件 | 说明 |
 |------|------|
-| `CodingLight.exe` | 托盘主程序 |
-| `CodingLightHook/` | Hook 可执行文件目录 |
-| `CodingLightUninstall.exe` | 卸载程序 |
-| `CodingLightSetup.exe` | 图形化安装包（分发给用户） |
+| `CodingLightSetup.exe` | 图形化安装包（**唯一分发产物**） |
+| `CodingLight.exe` | 托盘主程序（安装包内置，不单独发布） |
+| `CodingLightHook/` | Hook 可执行文件目录（安装包内置） |
+| `CodingLightUninstall.exe` | 卸载程序（安装包内置） |
 
 > 图标由 `scripts/process_icon.py` 从 `pc/assets/icon_source.png` 生成，打包脚本会自动处理。
 
@@ -98,7 +98,7 @@ git tag v1.0.1
 git push origin v1.0.1
 ```
 
-Release 会上传 `CodingLightSetup.exe`；用户端托盘「检查更新」会自动发现新版本。
+Release 仅上传 `CodingLightSetup.exe`；用户端托盘「检查更新」会自动发现新版本。
 
 ### 静默安装到 Program Files（需管理员 PowerShell）
 
