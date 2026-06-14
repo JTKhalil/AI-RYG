@@ -7,8 +7,17 @@ $DistExe = Join-Path $PcDir "dist\CodingLight.exe"
 $Python = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
 
 if (-not (Test-Path $Python)) {
-    throw "Python 3.12 not found: $Python"
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd -and $pythonCmd.Source -notmatch "WindowsApps") {
+        $Python = $pythonCmd.Source
+    }
 }
+
+if (-not (Test-Path $Python)) {
+    throw "Python 3.12 not found. Install Python or run on a machine with python on PATH."
+}
+
+Write-Host "Using Python: $Python" -ForegroundColor DarkGray
 
 Write-Host "==> Install deps" -ForegroundColor Cyan
 & $Python -m pip install -r (Join-Path $PcDir "requirements.txt")
