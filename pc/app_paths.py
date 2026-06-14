@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "CodingLight"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 APP_PUBLISHER = "CodingLight"
 GITHUB_REPO_OWNER = "JTKhalil"
 GITHUB_REPO = "AI-RYG"

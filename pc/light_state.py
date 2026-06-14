@@ -111,7 +111,58 @@ def _is_stale_thinking(data: dict, event: str, generation_id: str | None) -> boo
     return False
 
 
-def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
+def _copy_transcript_watch_fields(dst: dict, src: dict) -> None:
+    for key in (
+        "transcript_path",
+        "thinking_watch_offset",
+        "session_id",
+        "cwd",
+        "thinking_started_at",
+        "thinking_session_status",
+        "thinking_session_baseline_at",
+    ):
+        if key in src:
+            dst[key] = src[key]
+
+
+def _attach_transcript_watch_fields(state: dict, payload: dict) -> None:
+    from claude_session import snapshot_session_baseline
+    from confirm_transcript import resolve_transcript_path
+
+    path = resolve_transcript_path(payload)
+    if path is None:
+        recent = None
+        try:
+            from confirm_transcript import _find_recent_transcript
+
+            recent = _find_recent_transcript(max_age_sec=60.0)
+        except OSError:
+            pass
+        path = recent
+    if path is not None:
+        state["transcript_path"] = str(path)
+    session_id = payload.get("session_id") or payload.get("sessionId")
+    if session_id:
+        state["session_id"] = session_id
+    cwd = payload.get("cwd")
+    if cwd:
+        state["cwd"] = cwd
+    if path is not None:
+        try:
+            state["thinking_watch_offset"] = path.stat().st_size
+        except OSError:
+            state["thinking_watch_offset"] = 0
+    state["thinking_started_at"] = time.time()
+    snapshot_session_baseline(state)
+
+
+def mark_thinking(
+    *,
+    event: str = "",
+    generation_id: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    payload = payload or {}
     with FileLock(lock_path()):
         data = read_state()
         if data.get("mode") == "confirm":
@@ -122,6 +173,7 @@ def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
                 data.pop("transcript_path", None)
                 data.pop("session_id", None)
                 data.pop("cwd", None)
+                data.pop("thinking_watch_offset", None)
                 write_state(data)
                 return
             _restore_from_confirm(data)
@@ -130,6 +182,15 @@ def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
             write_state(data)
             return
         if _is_stale_thinking(data, event, generation_id):
+            return
+        if event in NEW_TURN_EVENTS and data.get("mode") != "confirm":
+            new_state: dict = {"mode": "thinking"}
+            if generation_id:
+                new_state["generation_id"] = generation_id
+            elif data.get("generation_id"):
+                new_state["generation_id"] = data["generation_id"]
+            _attach_transcript_watch_fields(new_state, payload)
+            write_state(new_state)
             return
         if data.get("mode") == "thinking" and not generation_id:
             return
@@ -142,6 +203,21 @@ def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
         new_state: dict = {"mode": "thinking"}
         if generation_id:
             new_state["generation_id"] = generation_id
+        if event in NEW_TURN_EVENTS:
+            _attach_transcript_watch_fields(new_state, payload)
+        else:
+            _copy_transcript_watch_fields(new_state, data)
+            if not new_state.get("transcript_path"):
+                _attach_transcript_watch_fields(new_state, payload)
+            elif "thinking_watch_offset" not in new_state:
+                from pathlib import Path
+
+                try:
+                    new_state["thinking_watch_offset"] = Path(
+                        str(new_state["transcript_path"])
+                    ).stat().st_size
+                except OSError:
+                    pass
         write_state(new_state)
 
 
@@ -209,10 +285,15 @@ def _finish_confirm_as_done(data: dict) -> None:
         data["settled_generation"] = generation_id
 
 
+def _finish_thinking_as_done(data: dict) -> None:
+    _finish_confirm_as_done(data)
+
+
 def _clear_confirm_context(data: dict) -> None:
     data.pop("transcript_path", None)
     data.pop("session_id", None)
     data.pop("cwd", None)
+    data.pop("thinking_watch_offset", None)
     data.pop("confirm_at", None)
 
 
@@ -227,23 +308,31 @@ def mark_confirm_done_if_pending() -> bool:
 
 
 def mark_restore_from_confirm(*, event: str = "", payload: dict | None = None) -> bool:
-    """Claude 点 No 后靠 MessageDisplay / Stop / idle_prompt 等恢复，不用定时器。"""
+    """Claude 点 No / idle_prompt / Stop 等恢复；idle_prompt 也用于 Ctrl+C 后回到等待输入。"""
     payload = payload or {}
     with FileLock(lock_path()):
         data = read_state()
-        if data.get("mode") != "confirm":
-            return False
+        mode = data.get("mode")
 
         if event == "Notification":
             ntype = payload.get("notification_type", "")
             if ntype in NOTIFICATION_SKIP_RESTORE:
                 return False
             if ntype in NOTIFICATION_IDLE_TYPES:
-                _finish_confirm_as_done(data)
-                write_state(data)
-                return True
+                if mode == "confirm":
+                    _finish_confirm_as_done(data)
+                    write_state(data)
+                    return True
+                if mode == "thinking":
+                    _finish_thinking_as_done(data)
+                    write_state(data)
+                    return True
+                return False
             if ntype == "permission_prompt":
                 return False
+
+        if mode != "confirm":
+            return False
 
         if event in CONFIRM_IGNORE_EVENTS:
             return False
@@ -308,18 +397,19 @@ def apply_hook(state: str, payload: dict | None = None) -> None:
             if mark_confirm_done_if_pending():
                 return
             return
-        if event in ("stop", "Stop"):
-            status = payload.get("status", "completed")
-            if status == "error":
-                mark_error()
-                return
-            if status == "aborted":
-                mark_off()
-                return
+        if event in ("stop", "Stop", "UserInterrupt"):
+            if event != "UserInterrupt":
+                status = payload.get("status", "completed")
+                if status == "error":
+                    mark_error()
+                    return
+                if status == "aborted":
+                    mark_off()
+                    return
         mark_done(generation_id=generation_id)
         return
     if state == "thinking":
-        mark_thinking(event=event, generation_id=generation_id)
+        mark_thinking(event=event, generation_id=generation_id, payload=payload)
         return
     if state == "confirm":
         mark_confirm(event=event, generation_id=generation_id, payload=payload)

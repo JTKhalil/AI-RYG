@@ -7,7 +7,11 @@ import sys
 from datetime import datetime
 
 from app_paths import log_path
-from confirm_transcript import run_transcript_watch, schedule_transcript_watch
+from confirm_transcript import (
+    run_transcript_watch,
+    schedule_thinking_interrupt_watch,
+    schedule_transcript_watch,
+)
 from hook_origin import should_process_hook
 from hook_source import get_hook_source
 from light_ipc import send_notify
@@ -88,6 +92,8 @@ def run(state: str, event: str = "") -> int:
     event_name = payload.get("hook_event_name", event)
     if state == "confirm" and event_name == "PermissionRequest":
         schedule_transcript_watch(payload=payload)
+    if state == "thinking" and event_name in ("UserPromptSubmit", "PostToolBatch"):
+        schedule_thinking_interrupt_watch(payload=payload)
     try:
         if not send_notify(state, ipc_payload(payload)):
             ensure_tray_if_needed()
@@ -107,11 +113,21 @@ def main() -> int:
     parser.add_argument("--event", default="")
     parser.add_argument("--transcript", default="")
     parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument(
+        "--mode",
+        default="confirm",
+        choices=["confirm", "thinking"],
+        help="transcript 监听模式",
+    )
     args = parser.parse_args()
     if args.state == "watch-transcript":
         if not args.transcript:
             return 1
-        return run_transcript_watch(args.transcript, args.offset)
+        return run_transcript_watch(
+            args.transcript,
+            args.offset,
+            watch_mode=args.mode,
+        )
     return run(args.state, args.event)
 
 
