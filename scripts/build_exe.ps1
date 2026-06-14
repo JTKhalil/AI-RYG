@@ -3,32 +3,53 @@ $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
 $PcDir = Join-Path $Root "pc"
-$DistExe = Join-Path $PcDir "dist\CursorTrafficLight.exe"
+$DistExe = Join-Path $PcDir "dist\CodingLight.exe"
 $Python = Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"
 
 if (-not (Test-Path $Python)) {
-    throw "未找到 Python 3.12: $Python"
+    throw "Python 3.12 not found: $Python"
 }
 
-Write-Host "==> 安装依赖" -ForegroundColor Cyan
+Write-Host "==> Install deps" -ForegroundColor Cyan
 & $Python -m pip install -r (Join-Path $PcDir "requirements.txt")
 
-Write-Host "==> 打包 EXE" -ForegroundColor Cyan
+Write-Host "==> Process icon" -ForegroundColor Cyan
+& $Python (Join-Path $Root "scripts\process_icon.py")
+
+Write-Host "==> Build EXE" -ForegroundColor Cyan
 Push-Location $PcDir
-& $Python -m PyInstaller --noconfirm CursorTrafficLight.spec
-& $Python -m PyInstaller --noconfirm CursorTrafficLightHook.spec
+& $Python -m PyInstaller --noconfirm CodingLight.spec
+& $Python -m PyInstaller --noconfirm CodingLightHook.spec
+& $Python -m PyInstaller --noconfirm CodingLightUninstall.spec
 Pop-Location
 
-$HookDir = Join-Path $PcDir "dist\CursorTrafficLightHook"
-$HookExe = Join-Path $HookDir "CursorTrafficLightHook.exe"
+$HookDir = Join-Path $PcDir "dist\CodingLightHook"
+$HookExe = Join-Path $HookDir "CodingLightHook.exe"
 if (-not (Test-Path $HookExe)) {
-    throw "打包失败，未找到 $HookExe"
+    throw "Build failed: $HookExe"
 }
 
 if (-not (Test-Path $DistExe)) {
-    throw "打包失败，未找到 $DistExe"
+    throw "Build failed: $DistExe"
+}
+
+$UninstallExe = Join-Path $PcDir "dist\CodingLightUninstall.exe"
+if (-not (Test-Path $UninstallExe)) {
+    throw "Build failed: $UninstallExe"
+}
+
+Write-Host "==> Build installer" -ForegroundColor Cyan
+Push-Location $PcDir
+& $Python -m PyInstaller --noconfirm CodingLightSetup.spec
+Pop-Location
+
+$SetupExe = Join-Path $PcDir "dist\CodingLightSetup.exe"
+if (-not (Test-Path $SetupExe)) {
+    throw "Build failed: $SetupExe"
 }
 
 Write-Host ""
-Write-Host "打包完成: $DistExe" -ForegroundColor Green
-Write-Host "运行安装: powershell -ExecutionPolicy Bypass -File `"$Root\scripts\install_app.ps1`""
+Write-Host "Done:" -ForegroundColor Green
+Write-Host "  App:     $DistExe"
+Write-Host "  Setup:   $SetupExe"
+Write-Host "  Default: C:\Program Files\CodingLight"

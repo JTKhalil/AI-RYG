@@ -1,14 +1,17 @@
 #Requires -Version 5.1
-$Exe = Join-Path $env:LOCALAPPDATA "CursorTrafficLight\CursorTrafficLight.exe"
-$Legacy = Join-Path (Split-Path -Parent $PSScriptRoot) "pc\dist\CursorTrafficLight.exe"
+$Candidates = @(
+    (Join-Path $env:ProgramFiles "CodingLight\CodingLight.exe"),
+    (Join-Path $env:LOCALAPPDATA "CodingLight\CodingLight.exe"),
+    (Join-Path $env:LOCALAPPDATA "CursorTrafficLight\CursorTrafficLight.exe"),
+    (Join-Path (Split-Path -Parent $PSScriptRoot) "pc\dist\CodingLight.exe")
+)
 
-if (Test-Path $Exe) {
-    Start-Process $Exe
-    Write-Host "Started: $Exe"
-} elseif (Test-Path $Legacy) {
-    Start-Process $Legacy
-    Write-Host "Started: $Legacy"
-} else {
-    Write-Host "请先运行 scripts\build_exe.ps1 和 scripts\install_app.ps1" -ForegroundColor Red
-    exit 1
+foreach ($Exe in $Candidates) {
+    if (Test-Path $Exe) {
+        Start-Process $Exe
+        exit 0
+    }
 }
+
+Write-Host "CodingLight.exe not found. Run CodingLightSetup.exe to install." -ForegroundColor Red
+exit 1

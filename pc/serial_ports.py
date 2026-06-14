@@ -73,6 +73,30 @@ def score_port(device: str, description: str, hwid: str) -> int:
     return score
 
 
+def list_all_ports() -> list[PortInfo]:
+    """枚举可用串口（排除 COM1），供连接设置选择。"""
+    try:
+        from serial.tools import list_ports
+    except Exception:
+        return []
+
+    items: list[PortInfo] = []
+    for port in list_ports.comports():
+        s = score_port(port.device, port.description or "", port.hwid or "")
+        if s < 0:
+            continue
+        items.append(
+            PortInfo(
+                device=port.device,
+                description=port.description or "",
+                hwid=port.hwid or "",
+                score=s,
+            )
+        )
+    items.sort(key=lambda p: (p.score, p.device), reverse=True)
+    return items
+
+
 def list_scored_ports() -> list[PortInfo]:
     try:
         from serial.tools import list_ports

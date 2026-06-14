@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app_config import DEFAULT_CONFIG, load_config_raw, save_config
 from install_claude_hooks import install_claude_hooks, uninstall_claude_hooks
-from install_hooks import install_hooks, uninstall_cursor_hooks
+from install_hooks import install_hooks
 
 HOOK_SOURCE_CURSOR = "cursor"
 HOOK_SOURCE_CLAUDE = "claude"
@@ -22,11 +22,12 @@ def get_hook_source(cfg: dict | None = None) -> str:
 def apply_hook_source(source: str) -> None:
     if source not in VALID_HOOK_SOURCES:
         raise ValueError(f"未知监听源: {source}")
+    # 始终保留 ~/.cursor/hooks.json（含 stop），避免切源时 Cursor 丢失完成 Hook。
+    # 实际是否处理由 hook_entry 按 hook_source 过滤。
+    install_hooks()
     if source == HOOK_SOURCE_CURSOR:
         uninstall_claude_hooks()
-        install_hooks()
     else:
-        uninstall_cursor_hooks()
         install_claude_hooks()
 
 

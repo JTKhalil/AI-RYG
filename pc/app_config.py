@@ -41,6 +41,8 @@ def ensure_config() -> dict:
 def refresh_port_if_needed(cfg: dict) -> dict:
     """配置端口不可用或发现更高优先级 ESP32 时自动更新。"""
     current = cfg.get("port", "")
+    if not current:
+        return cfg
     if current and port_exists(current):
         return cfg
 
@@ -74,6 +76,22 @@ def load_config_raw() -> dict:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return DEFAULT_CONFIG.copy()
+
+
+def set_port(port: str) -> dict:
+    """写入指定串口并返回完整配置。"""
+    cfg = load_config_raw()
+    merged = {**DEFAULT_CONFIG, **cfg, "port": port}
+    save_config(merged)
+    return merged
+
+
+def clear_port() -> dict:
+    """清除串口配置（用户主动断开）。"""
+    cfg = load_config_raw()
+    merged = {**DEFAULT_CONFIG, **cfg, "port": ""}
+    save_config(merged)
+    return merged
 
 
 def save_config(cfg: dict) -> None:

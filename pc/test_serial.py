@@ -1,66 +1,88 @@
-"""通过守护进程测试灯光：黄 -> 绿 -> 红 -> 灭。"""
+"""串口与固件诊断 + 灯光测试。"""
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
-from pathlib import Path
 
-from app_paths import exe_path, is_frozen, log_path, pid_path
+import serial
+
+from app_config import load_config
+from app_paths import log_path
 from light_state import mark_done, mark_error, mark_off, mark_thinking
+from serial_ports import list_scored_ports
+from tray_launcher import daemon_running, start_tray_detached
 
-SCRIPT_DIR = Path(__file__).resolve().parent
 
-
-def daemon_running() -> bool:
-    path = pid_path()
-    if not path.exists():
-        return False
+def probe_firmware(port: str, baud: int = 115200) -> tuple[bool, str]:
+    """直连串口，确认 ESP32 固件是否在运行。"""
     try:
-        pid = int(path.read_text(encoding="utf-8").strip())
-    except ValueError:
-        return False
-    if sys.platform == "win32":
-        import ctypes
+        with serial.Serial(port, baud, timeout=1.5) as ser:
+            ser.reset_input_buffer()
+            time.sleep(0.4)
+            boot = ser.read(512).decode("utf-8", errors="replace")
+            if "waiting for download" in boot.lower():
+                return False, "ESP32 处于下载模式，未运行信号灯固件（请用 Arduino 烧录后按 RESET）"
+            ser.write(b"Y\n")
+            ser.flush()
+            time.sleep(0.6)
+            resp = boot + ser.read(512).decode("utf-8", errors="replace")
+            if "OK:YELLOW" in resp or "Traffic Light Ready" in resp:
+                return True, "固件正常"
+            if resp.strip():
+                return False, f"串口有数据但非本固件: {resp.strip()[:120]}"
+            return False, "串口无响应：很可能未烧录 ai_traffic_light.ino 固件"
+    except serial.SerialException as exc:
+        msg = str(exc)
+        if "PermissionError" in msg or "拒绝" in msg:
+            return False, f"无法打开 {port}（被其他程序占用，请先退出托盘程序/Arduino 串口监视器）"
+        if "FileNotFound" in msg or "找不到" in msg:
+            return False, f"找不到串口 {port}，请检查 USB 连接"
+        return False, msg
 
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            path.unlink(missing_ok=True)
-            return False
-        code = ctypes.c_ulong()
-        alive = (
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-            and code.value == STILL_ACTIVE
-        )
-        ctypes.windll.kernel32.CloseHandle(handle)
-        if not alive:
-            path.unlink(missing_ok=True)
-        return alive
-    return True
+
+def print_port_hint() -> None:
+    ports = list_scored_ports()
+    if not ports:
+        print("未检测到任何 USB 串口。")
+        return
+    print("当前检测到的串口：")
+    for item in ports:
+        print(f"  {item.label}")
 
 
 def ensure_daemon() -> None:
     if daemon_running():
         return
-
-    if is_frozen():
-        cmd = [str(exe_path())]
-    else:
-        cmd = [sys.executable, str(SCRIPT_DIR / "cursor_light_app.py")]
-
-    subprocess.Popen(cmd, cwd=str(SCRIPT_DIR))
+    start_tray_detached()
     for _ in range(20):
         time.sleep(0.25)
         if daemon_running():
             return
-    raise RuntimeError("守护进程启动失败，请先运行 CursorTrafficLight.exe")
+    raise RuntimeError("守护进程启动失败，请先运行 CodingLight.exe")
 
 
 def main() -> int:
-    print("将依次测试：黄 -> 绿 -> 红 -> 灭（需 CursorTrafficLight 在运行）")
+    cfg = load_config()
+    port = cfg.get("port", "COM14")
+    baud = int(cfg.get("baud", 115200))
+
+    print(f"=== 1. 固件诊断 ({port}) ===")
+    ok, detail = probe_firmware(port, baud)
+    print(detail)
+    if not ok:
+        print_port_hint()
+        print()
+        print("请按以下步骤烧录固件：")
+        print("  1. Arduino IDE → 开发板选 ESP32C3 Dev Module")
+        print("  2. USB CDC On Boot = Enabled")
+        print("  3. 打开 esp32/ai_traffic_light/ai_traffic_light.ino 并上传")
+        print("  4. 模块 GND/R/Y/G 分别接 GND、GPIO4、GPIO5、GPIO6")
+        print("  5. 上传完成后按一下 ESP32 的 RESET，再重新运行本脚本")
+        return 1
+
+    print()
+    print("=== 2. 灯光测试（经守护进程）===")
     try:
         ensure_daemon()
         for label, action in [

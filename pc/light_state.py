@@ -16,7 +16,20 @@ NEW_TURN_EVENTS = frozenset(
         "SessionStart",
     }
 )
-# stop 之后到达的 thinking Hook 视为迟到事件，保持绿灯直到新回合开始
+
+RESUMABLE_MODES = frozenset({"thinking", "done"})
+PERMISSION_PROMPT_MIN_AGE_SEC = 2.0
+NOTIFICATION_IDLE_TYPES = frozenset({"idle_prompt"})
+NOTIFICATION_SKIP_RESTORE = frozenset({"auth_success", "elicitation_dialog", "elicitation_complete"})
+# 点 No 后才应触发的恢复事件（不用定时器，避免弹窗未操作就亮绿灯）
+CONFIRM_DONE_EVENTS = frozenset(
+    {
+        "PermissionDenied",
+        "Stop",
+    }
+)
+# MessageDisplay 在展示权限说明时就会触发，不能用来判断「已点 No」
+CONFIRM_IGNORE_EVENTS = frozenset({"MessageDisplay"})
 
 
 class FileLock:
@@ -65,9 +78,12 @@ def read_state() -> dict:
 
 
 def write_state(data: dict) -> None:
+    from unicode_safe import sanitize_obj
+
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    text = json.dumps(sanitize_obj(data), ensure_ascii=False)
+    path.write_text(text, encoding="utf-8", errors="replace")
 
 
 def update_state(mutator) -> dict:
@@ -98,6 +114,21 @@ def _is_stale_thinking(data: dict, event: str, generation_id: str | None) -> boo
 def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
     with FileLock(lock_path()):
         data = read_state()
+        if data.get("mode") == "confirm":
+            if event in NEW_TURN_EVENTS:
+                _finish_confirm_as_done(data)
+                if generation_id:
+                    data["generation_id"] = generation_id
+                data.pop("transcript_path", None)
+                data.pop("session_id", None)
+                data.pop("cwd", None)
+                write_state(data)
+                return
+            _restore_from_confirm(data)
+            if generation_id:
+                data["generation_id"] = generation_id
+            write_state(data)
+            return
         if _is_stale_thinking(data, event, generation_id):
             return
         if data.get("mode") == "thinking" and not generation_id:
@@ -114,34 +145,127 @@ def mark_thinking(*, event: str = "", generation_id: str | None = None) -> None:
         write_state(new_state)
 
 
-def mark_confirm(*, event: str = "", generation_id: str | None = None) -> None:
+def _restore_from_confirm(data: dict) -> None:
+    resume = data.pop("resume_mode", "thinking")
+    if resume not in RESUMABLE_MODES:
+        resume = "thinking"
+    data["mode"] = resume
+    if resume == "done":
+        done_at = data.pop("resume_done_at", None)
+        if done_at is not None:
+            data["done_at"] = done_at
+        settled = data.pop("resume_settled_generation", None)
+        if settled:
+            data["settled_generation"] = settled
+    else:
+        data.pop("resume_done_at", None)
+        data.pop("resume_settled_generation", None)
+    _clear_confirm_context(data)
+
+
+def mark_confirm(
+    *,
+    event: str = "",
+    generation_id: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    payload = payload or {}
     with FileLock(lock_path()):
         data = read_state()
         if data.get("mode") == "error":
             return
         if _is_stale_thinking(data, event, generation_id):
             return
-        if data.get("mode") == "confirm" and not generation_id:
-            return
-        if (
-            data.get("mode") == "confirm"
-            and generation_id
-            and data.get("generation_id") == generation_id
-        ):
-            return
-        new_state: dict = {"mode": "confirm"}
+        if data.get("mode") != "confirm":
+            previous = data.get("mode", "thinking")
+            data["resume_mode"] = previous if previous in RESUMABLE_MODES else "thinking"
+            if previous == "done":
+                if "done_at" in data:
+                    data["resume_done_at"] = data["done_at"]
+                if "settled_generation" in data:
+                    data["resume_settled_generation"] = data.get("settled_generation")
+        data["mode"] = "confirm"
+        data["confirm_at"] = time.time()
         if generation_id:
-            new_state["generation_id"] = generation_id
-        write_state(new_state)
+            data["generation_id"] = generation_id
+        transcript_path = payload.get("transcript_path") or payload.get("transcriptPath")
+        if transcript_path:
+            data["transcript_path"] = transcript_path
+        session_id = payload.get("session_id") or payload.get("sessionId")
+        if session_id:
+            data["session_id"] = session_id
+        cwd = payload.get("cwd")
+        if cwd:
+            data["cwd"] = cwd
+        write_state(data)
+
+
+def _finish_confirm_as_done(data: dict) -> None:
+    generation_id = data.get("generation_id")
+    data.clear()
+    data["mode"] = "done"
+    data["done_at"] = time.time()
+    if generation_id:
+        data["settled_generation"] = generation_id
+
+
+def _clear_confirm_context(data: dict) -> None:
+    data.pop("transcript_path", None)
+    data.pop("session_id", None)
+    data.pop("cwd", None)
+    data.pop("confirm_at", None)
+
+
+def mark_confirm_done_if_pending() -> bool:
+    with FileLock(lock_path()):
+        data = read_state()
+        if data.get("mode") != "confirm":
+            return False
+        _finish_confirm_as_done(data)
+        write_state(data)
+        return True
+
+
+def mark_restore_from_confirm(*, event: str = "", payload: dict | None = None) -> bool:
+    """Claude 点 No 后靠 MessageDisplay / Stop / idle_prompt 等恢复，不用定时器。"""
+    payload = payload or {}
+    with FileLock(lock_path()):
+        data = read_state()
+        if data.get("mode") != "confirm":
+            return False
+
+        if event == "Notification":
+            ntype = payload.get("notification_type", "")
+            if ntype in NOTIFICATION_SKIP_RESTORE:
+                return False
+            if ntype in NOTIFICATION_IDLE_TYPES:
+                _finish_confirm_as_done(data)
+                write_state(data)
+                return True
+            if ntype == "permission_prompt":
+                return False
+
+        if event in CONFIRM_IGNORE_EVENTS:
+            return False
+
+        if event in CONFIRM_DONE_EVENTS:
+            _finish_confirm_as_done(data)
+            write_state(data)
+            return True
+
+        _restore_from_confirm(data)
+        write_state(data)
+        return True
 
 
 def mark_done(*, generation_id: str | None = None) -> None:
     def mutate(data: dict) -> None:
+        settled = generation_id or data.get("generation_id")
         data.clear()
         data["mode"] = "done"
         data["done_at"] = time.time()
-        if generation_id:
-            data["settled_generation"] = generation_id
+        if settled:
+            data["settled_generation"] = settled
 
     update_state(mutate)
 
@@ -180,6 +304,10 @@ def apply_hook(state: str, payload: dict | None = None) -> None:
             mark_error()
         return
     if state == "done":
+        if event in ("TranscriptDenied", "ConfirmTimeout"):
+            if mark_confirm_done_if_pending():
+                return
+            return
         if event in ("stop", "Stop"):
             status = payload.get("status", "completed")
             if status == "error":
@@ -194,7 +322,10 @@ def apply_hook(state: str, payload: dict | None = None) -> None:
         mark_thinking(event=event, generation_id=generation_id)
         return
     if state == "confirm":
-        mark_confirm(event=event, generation_id=generation_id)
+        mark_confirm(event=event, generation_id=generation_id, payload=payload)
+        return
+    if state == "restore":
+        mark_restore_from_confirm(event=event, payload=payload)
         return
 
 

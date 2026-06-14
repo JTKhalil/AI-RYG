@@ -1,33 +1,32 @@
 /*
  * Cursor AI 状态信号灯 - ESP32-C3 固件
  *
- * 串口命令：Y=黄(思考·PWM呼吸)  C=黄闪(等待确认·30%)  G=绿(完成·常亮)  R=红(报错·闪烁)  O=熄灭
+ * 串口命令：Y=黄(思考·PWM呼吸)  C=黄常亮+红闪(等待确认)  G=绿(完成·常亮)  R=红(报错·闪烁)  O=熄灭
  *
- * 黄灯呼吸最高 40%；确认闪烁 / 绿·红灯最高 30%
+ * 黄灯呼吸/确认常亮最高 40%；绿·红灯最高 30%
  *
- * 四线模块（PIN1 / PIN2 / VCC / GND）：
- *   VCC  -> ESP32 5V（或 3V）
- *   GND  -> ESP32 GND
- *   PIN1 -> GPIO 4
- *   PIN2 -> GPIO 5
+ * ── 四线模块 GND / R / Y / G（共阴，默认）──
+ *   模块 GND -> ESP32 GND
+ *   模块 R   -> GPIO 4
+ *   模块 Y   -> GPIO 5
+ *   模块 G   -> GPIO 6
  *
- * 本模块实测编码：
- *   PIN1=0 PIN2=0  全灭
- *   PIN1=0 PIN2=1  红灯
- *   PIN1=1 PIN2=0  黄灯
- *   PIN1=1 PIN2=1  绿灯
+ * 若是共阳模块（COM 接 VCC），将 LED_ACTIVE_LOW 改为 true
+ *
+ * ── 旧版两线编码模块（PIN1/PIN2）──
+ *   将 TWO_PIN_MODULE 改为 true，见文件末尾 #if 分支
  */
 
 #include <math.h>
 
-#define TWO_PIN_MODULE true
-
-#define PIN1       4
-#define PIN2       5
+#define TWO_PIN_MODULE false
 
 #define PIN_RED    4
 #define PIN_YELLOW 5
 #define PIN_GREEN  6
+
+#define PIN1       4
+#define PIN2       5
 
 #define LED_ACTIVE_LOW false
 #define SERIAL_BAUD  115200
@@ -35,7 +34,6 @@
 #define BREATH_CYCLE_MS     2000UL
 #define BREATH_MIN_BRIGHT       0.03f
 #define MAX_YELLOW_BRIGHT       0.40f
-#define MAX_CONFIRM_BRIGHT      0.30f
 #define MAX_GREEN_BRIGHT        0.30f
 #define MAX_RED_BRIGHT          0.30f
 #define BREATH_PWM_FREQ     5000
@@ -60,12 +58,17 @@ LightState currentState = STATE_OFF;
 
 unsigned long breathPhaseStartMs = 0;
 unsigned long redBlinkLastToggleMs = 0;
-unsigned long confirmBlinkLastToggleMs = 0;
 bool redBlinkOn = true;
-bool confirmBlinkOn = true;
+uint8_t lastBreathDuty = 0;
+
+#if TWO_PIN_MODULE
 bool pin1PwmActive = false;
 bool pin2PwmActive = false;
-uint8_t lastBreathDuty = 0;
+#else
+bool redPwmActive = false;
+bool yellowPwmActive = false;
+bool greenPwmActive = false;
+#endif
 
 uint8_t peakDutyFor(float maxBright) {
   return (uint8_t)(255.0f * maxBright + 0.5f);
@@ -79,7 +82,138 @@ void setPin(int pin, bool on) {
   }
 }
 
-#if TWO_PIN_MODULE
+uint8_t breathDutyFromBrightness(float brightness) {
+  int maxDuty = (int)peakDutyFor(MAX_YELLOW_BRIGHT);
+  float gamma = powf(brightness, 0.65f);
+  int duty = (int)(gamma * (float)maxDuty + 0.5f);
+  int minDuty = (int)(BREATH_MIN_BRIGHT * (float)maxDuty);
+  if (duty < minDuty) {
+    duty = minDuty;
+  }
+  if (duty > maxDuty) {
+    duty = maxDuty;
+  }
+  return (uint8_t)duty;
+}
+
+#if !TWO_PIN_MODULE
+
+void detachPwmPin(int pin, bool &active) {
+  if (!active) {
+    return;
+  }
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcDetach(pin);
+#else
+  ledcDetachPin(pin);
+#endif
+  pinMode(pin, OUTPUT);
+  active = false;
+}
+
+void ensurePwmPin(int pin, bool &active) {
+  if (active) {
+    return;
+  }
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(pin, BREATH_PWM_FREQ, BREATH_PWM_BITS);
+#else
+  int channel = 0;
+  if (pin == PIN_RED) {
+    channel = 0;
+  } else if (pin == PIN_YELLOW) {
+    channel = 1;
+  } else if (pin == PIN_GREEN) {
+    channel = 2;
+  }
+  ledcSetup(channel, BREATH_PWM_FREQ, BREATH_PWM_BITS);
+  ledcAttachPin(pin, channel);
+#endif
+  active = true;
+}
+
+void writePwmPin(int pin, bool &active, uint8_t duty) {
+  ensurePwmPin(pin, active);
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(pin, duty);
+#else
+  int channel = 0;
+  if (pin == PIN_RED) {
+    channel = 0;
+  } else if (pin == PIN_YELLOW) {
+    channel = 1;
+  } else if (pin == PIN_GREEN) {
+    channel = 2;
+  }
+  ledcWrite(channel, duty);
+#endif
+}
+
+void stopAllPwm() {
+  detachPwmPin(PIN_RED, redPwmActive);
+  detachPwmPin(PIN_YELLOW, yellowPwmActive);
+  detachPwmPin(PIN_GREEN, greenPwmActive);
+}
+
+void allColorsOff() {
+  setPin(PIN_RED, false);
+  setPin(PIN_YELLOW, false);
+  setPin(PIN_GREEN, false);
+}
+
+void applyState(LightState state) {
+  stopAllPwm();
+  allColorsOff();
+
+  switch (state) {
+    case STATE_RED:
+      writePwmPin(PIN_RED, redPwmActive, peakDutyFor(MAX_RED_BRIGHT));
+      break;
+    case STATE_GREEN:
+      writePwmPin(PIN_GREEN, greenPwmActive, peakDutyFor(MAX_GREEN_BRIGHT));
+      break;
+    case STATE_YELLOW:
+    case STATE_CONFIRM:
+      break;
+    case STATE_OFF:
+    default:
+      break;
+  }
+}
+
+void writeYellowPwm(uint8_t duty) {
+  if (redPwmActive) {
+    detachPwmPin(PIN_RED, redPwmActive);
+  }
+  if (greenPwmActive) {
+    detachPwmPin(PIN_GREEN, greenPwmActive);
+  }
+  setPin(PIN_RED, false);
+  setPin(PIN_GREEN, false);
+  writePwmPin(PIN_YELLOW, yellowPwmActive, duty);
+}
+
+void applyConfirmYellowSolid() {
+  if (greenPwmActive) {
+    detachPwmPin(PIN_GREEN, greenPwmActive);
+  }
+  setPin(PIN_GREEN, false);
+  writePwmPin(PIN_YELLOW, yellowPwmActive, peakDutyFor(MAX_YELLOW_BRIGHT));
+}
+
+void applyConfirmRedPhase(bool redOn) {
+  applyConfirmYellowSolid();
+  if (redOn) {
+    writePwmPin(PIN_RED, redPwmActive, peakDutyFor(MAX_RED_BRIGHT));
+  } else if (redPwmActive) {
+    detachPwmPin(PIN_RED, redPwmActive);
+    setPin(PIN_RED, false);
+  } else {
+    setPin(PIN_RED, false);
+  }
+}
+
+#else
 
 void detachPin1Pwm() {
   if (!pin1PwmActive) {
@@ -164,8 +298,8 @@ void applyState(LightState state) {
       writePin2Duty(peakDutyFor(MAX_RED_BRIGHT));
       break;
     case STATE_YELLOW:
+    case STATE_CONFIRM:
       setPin(PIN2, false);
-      writePin1Duty(peakDutyFor(MAX_YELLOW_BRIGHT));
       break;
     case STATE_GREEN:
       writePin1Duty(peakDutyFor(MAX_GREEN_BRIGHT));
@@ -179,26 +313,6 @@ void applyState(LightState state) {
   }
 }
 
-uint8_t breathDutyFromBrightness(float brightness) {
-  int maxDuty = (int)peakDutyFor(MAX_YELLOW_BRIGHT);
-  float gamma = powf(brightness, 0.65f);
-  int duty = (int)(gamma * (float)maxDuty + 0.5f);
-  int minDuty = (int)(BREATH_MIN_BRIGHT * (float)maxDuty);
-  if (duty < minDuty) {
-    duty = minDuty;
-  }
-  if (duty > maxDuty) {
-    duty = maxDuty;
-  }
-  return (uint8_t)duty;
-}
-
-void applyConfirmYellow() {
-  stopAllPwm();
-  setPin(PIN2, false);
-  writePin1Duty(peakDutyFor(MAX_CONFIRM_BRIGHT));
-}
-
 void writeYellowPwm(uint8_t duty) {
   if (pin2PwmActive) {
     detachPin2Pwm();
@@ -207,26 +321,19 @@ void writeYellowPwm(uint8_t duty) {
   writePin1Duty(duty);
 }
 
-#else
+void applyConfirmYellowSolid() {
+  detachPin2Pwm();
+  setPin(PIN2, false);
+  writePin1Duty(peakDutyFor(MAX_YELLOW_BRIGHT));
+}
 
-void applyState(LightState state) {
-  setPin(PIN_RED, false);
-  setPin(PIN_YELLOW, false);
-  setPin(PIN_GREEN, false);
-
-  switch (state) {
-    case STATE_YELLOW:
-      setPin(PIN_YELLOW, true);
-      break;
-    case STATE_GREEN:
-      setPin(PIN_GREEN, true);
-      break;
-    case STATE_RED:
-      setPin(PIN_RED, true);
-      break;
-    case STATE_OFF:
-    default:
-      break;
+void applyConfirmRedPhase(bool redOn) {
+  applyConfirmYellowSolid();
+  if (redOn) {
+    writePin2Duty(peakDutyFor(MAX_RED_BRIGHT));
+  } else {
+    detachPin2Pwm();
+    setPin(PIN2, false);
   }
 }
 
@@ -237,25 +344,33 @@ void enterState(LightState state) {
     return;
   }
 
+  LightState previous = currentState;
   currentState = state;
   unsigned long now = millis();
-  breathPhaseStartMs = now;
   redBlinkLastToggleMs = now;
-  confirmBlinkLastToggleMs = now;
   redBlinkOn = true;
-  confirmBlinkOn = true;
-  lastBreathDuty = 0;
+
+  if (state == STATE_CONFIRM) {
+    breathPhaseStartMs = now;
+    lastBreathDuty = 0;
+    redBlinkLastToggleMs = now;
+    redBlinkOn = false;
+    applyConfirmRedPhase(false);
+    return;
+  }
 
   if (state == STATE_YELLOW) {
-    // 亮度由 updateYellowBreathing() 通过 PWM 连续调节
-  } else if (state == STATE_RED) {
+    if (previous != STATE_YELLOW) {
+      breathPhaseStartMs = now;
+      lastBreathDuty = 0;
+    }
+    return;
+  }
+
+  breathPhaseStartMs = now;
+  lastBreathDuty = 0;
+  if (state == STATE_RED) {
     applyState(STATE_RED);
-  } else if (state == STATE_CONFIRM) {
-#if TWO_PIN_MODULE
-    applyConfirmYellow();
-#else
-    setPin(PIN_YELLOW, true);
-#endif
   } else {
     applyState(state);
   }
@@ -285,20 +400,10 @@ void updateRedBlink() {
 
 void updateConfirmBlink() {
   unsigned long now = millis();
-  if (now - confirmBlinkLastToggleMs >= RED_BLINK_MS) {
-    confirmBlinkLastToggleMs = now;
-    confirmBlinkOn = !confirmBlinkOn;
-#if TWO_PIN_MODULE
-    if (confirmBlinkOn) {
-      applyConfirmYellow();
-    } else {
-      applyState(STATE_OFF);
-    }
-#else
-    setPin(PIN_RED, false);
-    setPin(PIN_GREEN, false);
-    setPin(PIN_YELLOW, confirmBlinkOn);
-#endif
+  if (now - redBlinkLastToggleMs >= RED_BLINK_MS) {
+    redBlinkLastToggleMs = now;
+    redBlinkOn = !redBlinkOn;
+    applyConfirmRedPhase(redBlinkOn);
   }
 }
 
@@ -374,7 +479,11 @@ void setup() {
 #endif
 
   Serial.println(F("Cursor AI Traffic Light Ready (ESP32-C3)"));
-  Serial.println(F("Commands: Y=breathing C=confirm-blink G=steady R=blink O=off"));
+#if TWO_PIN_MODULE
+  Serial.println(F("Module: 2-pin encoded | Commands: Y C G R O"));
+#else
+  Serial.println(F("Module: GND/R/Y/G | Commands: Y C G R O"));
+#endif
 }
 
 void loop() {

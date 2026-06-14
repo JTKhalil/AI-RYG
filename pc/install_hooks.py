@@ -38,14 +38,56 @@ def hooks_file_path() -> Path:
 
 
 def hook_command(state: str, event: str = "") -> str:
-    if is_frozen():
-        cmd = f'"{hook_exe_path()}" {state}'
+    target = hook_exe_path()
+    if target.suffix.lower() == ".exe":
+        cmd = f'"{target}" {state}'
     else:
-        entry = Path(__file__).resolve().parent / "hook_entry.py"
-        cmd = f'"{sys.executable}" "{entry}" {state}'
+        cmd = f'"{sys.executable}" "{target}" {state}'
     if event:
         cmd += f" --event {event}"
     return cmd
+
+
+def _parse_hook_state_event(cmd: str) -> tuple[str, str] | None:
+    """从本程序 Hook 命令中解析 (state, event)。"""
+    if not _is_our_hook_command(cmd):
+        return None
+    import shlex
+
+    try:
+        parts = shlex.split(cmd, posix=False)
+    except ValueError:
+        return None
+    state = ""
+    event = ""
+    known_states = {
+        "off",
+        "thinking",
+        "confirm",
+        "done",
+        "error",
+        "restore",
+        "watch-transcript",
+    }
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part == "--event" and i + 1 < len(parts):
+            event = parts[i + 1]
+            i += 2
+            continue
+        if part in known_states and not state:
+            state = part
+        i += 1
+    return (state, event) if state else None
+
+
+def hook_commands_match(actual: str, expected: str) -> bool:
+    if _normalize_cmd(actual) == _normalize_cmd(expected):
+        return True
+    parsed_actual = _parse_hook_state_event(actual)
+    parsed_expected = _parse_hook_state_event(expected)
+    return parsed_actual is not None and parsed_actual == parsed_expected
 
 
 def build_hooks() -> dict:
@@ -61,11 +103,20 @@ def _normalize_cmd(cmd: str) -> str:
 
 def _is_our_hook_command(cmd: str) -> bool:
     norm = _normalize_cmd(cmd)
-    return "--hook" in norm and (
-        "cursortrafficlight.exe" in norm
-        or "cursortrafficlighthook.exe" in norm
-        or "cursor_light_app.py" in norm
-        or "hook_entry.py" in norm
+    return any(
+        marker in norm
+        for marker in (
+            "codinglight.exe",
+            "codinglighthook.exe",
+            "cursortrafficlight.exe",
+            "cursortrafficlighthook.exe",
+            "cursor_light_app.py",
+            "hook_entry.py",
+            "codinglight\\",
+            "codinglight/",
+            "cursortrafficlight\\",
+            "cursortrafficlight/",
+        )
     )
 
 
@@ -101,14 +152,14 @@ def check_hooks_status() -> HookStatus:
             missing += 1
             continue
         actual_cmd = actual_entries[0].get("command", "")
-        if _normalize_cmd(actual_cmd) == _normalize_cmd(expected_cmd):
+        if hook_commands_match(actual_cmd, expected_cmd):
             matched += 1
         elif _is_our_hook_command(actual_cmd):
             outdated += 1
         else:
             missing += 1
 
-    total = len(HOOK_MAP)
+    total = len(expected)
     if matched == total:
         return HookStatus(
             ok=True,
@@ -133,6 +184,13 @@ def check_hooks_status() -> HookStatus:
     )
 
 
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 def install_hooks() -> Path:
     cursor_dir = Path.home() / ".cursor"
     cursor_dir.mkdir(parents=True, exist_ok=True)
@@ -147,16 +205,18 @@ def install_hooks() -> Path:
         if "hooks" not in existing:
             existing["hooks"] = {}
         for event, entries in new_hooks["hooks"].items():
-            existing["hooks"][event] = entries
+            kept = [
+                entry
+                for entry in existing["hooks"].get(event, [])
+                if not _is_our_hook_command(entry.get("command", ""))
+            ]
+            existing["hooks"][event] = kept + entries
         existing["version"] = 1
         payload = existing
     else:
         payload = new_hooks
 
-    hooks_file.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_json(hooks_file, payload)
     return hooks_file
 
 
@@ -171,7 +231,7 @@ def uninstall_cursor_hooks() -> None:
 
     hooks = data.get("hooks", {})
     changed = False
-    for event in HOOK_MAP:
+    for event in list(hooks):
         entries = hooks.get(event)
         if not entries:
             continue
@@ -191,7 +251,4 @@ def uninstall_cursor_hooks() -> None:
         return
 
     data["hooks"] = hooks
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_json(path, data)

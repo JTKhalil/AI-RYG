@@ -16,12 +16,15 @@ _stop = threading.Event()
 
 def send_notify(state: str, payload: dict | None = None) -> bool:
     """向运行中的守护进程发送灯态；成功则 Hook 无需再写状态文件。"""
+    from unicode_safe import ipc_payload, sanitize_obj
+
+    safe_payload = sanitize_obj(ipc_payload(payload or {}))
     message = json.dumps(
-        {"state": state, "payload": payload or {}},
+        {"state": state, "payload": safe_payload},
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    data = (message + "\n").encode("utf-8")
+    data = (message + "\n").encode("utf-8", errors="replace")
     try:
         with socket.create_connection(
             (IPC_HOST, IPC_PORT),
