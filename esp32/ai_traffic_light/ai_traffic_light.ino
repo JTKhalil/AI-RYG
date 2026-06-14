@@ -5,28 +5,20 @@
  *
  * 黄灯呼吸/确认常亮最高 40%；绿·红灯最高 30%
  *
- * ── 四线模块 GND / R / Y / G（共阴，默认）──
+ * 接线（红 / 黄 / 绿 各一根 + GND）：
  *   模块 GND -> ESP32 GND
  *   模块 R   -> GPIO 4
  *   模块 Y   -> GPIO 5
  *   模块 G   -> GPIO 6
  *
  * 若是共阳模块（COM 接 VCC），将 LED_ACTIVE_LOW 改为 true
- *
- * ── 旧版两线编码模块（PIN1/PIN2）──
- *   将 TWO_PIN_MODULE 改为 true，见文件末尾 #if 分支
  */
 
 #include <math.h>
 
-#define TWO_PIN_MODULE false
-
 #define PIN_RED    4
 #define PIN_YELLOW 5
 #define PIN_GREEN  6
-
-#define PIN1       4
-#define PIN2       5
 
 #define LED_ACTIVE_LOW false
 #define SERIAL_BAUD  115200
@@ -38,8 +30,6 @@
 #define MAX_RED_BRIGHT          0.30f
 #define BREATH_PWM_FREQ     5000
 #define BREATH_PWM_BITS     8
-#define LEDC_CH_PIN1        0
-#define LEDC_CH_PIN2        1
 #define RED_BLINK_MS         500UL
 
 #ifndef PI
@@ -61,14 +51,9 @@ unsigned long redBlinkLastToggleMs = 0;
 bool redBlinkOn = true;
 uint8_t lastBreathDuty = 0;
 
-#if TWO_PIN_MODULE
-bool pin1PwmActive = false;
-bool pin2PwmActive = false;
-#else
 bool redPwmActive = false;
 bool yellowPwmActive = false;
 bool greenPwmActive = false;
-#endif
 
 uint8_t peakDutyFor(float maxBright) {
   return (uint8_t)(255.0f * maxBright + 0.5f);
@@ -95,8 +80,6 @@ uint8_t breathDutyFromBrightness(float brightness) {
   }
   return (uint8_t)duty;
 }
-
-#if !TWO_PIN_MODULE
 
 void detachPwmPin(int pin, bool &active) {
   if (!active) {
@@ -212,132 +195,6 @@ void applyConfirmRedPhase(bool redOn) {
     setPin(PIN_RED, false);
   }
 }
-
-#else
-
-void detachPin1Pwm() {
-  if (!pin1PwmActive) {
-    return;
-  }
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcDetach(PIN1);
-#else
-  ledcDetachPin(PIN1);
-#endif
-  pinMode(PIN1, OUTPUT);
-  pin1PwmActive = false;
-}
-
-void detachPin2Pwm() {
-  if (!pin2PwmActive) {
-    return;
-  }
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcDetach(PIN2);
-#else
-  ledcDetachPin(PIN2);
-#endif
-  pinMode(PIN2, OUTPUT);
-  pin2PwmActive = false;
-}
-
-void stopAllPwm() {
-  detachPin1Pwm();
-  detachPin2Pwm();
-}
-
-void ensurePin1Pwm() {
-  if (pin1PwmActive) {
-    return;
-  }
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PIN1, BREATH_PWM_FREQ, BREATH_PWM_BITS);
-#else
-  ledcSetup(LEDC_CH_PIN1, BREATH_PWM_FREQ, BREATH_PWM_BITS);
-  ledcAttachPin(PIN1, LEDC_CH_PIN1);
-#endif
-  pin1PwmActive = true;
-}
-
-void ensurePin2Pwm() {
-  if (pin2PwmActive) {
-    return;
-  }
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(PIN2, BREATH_PWM_FREQ, BREATH_PWM_BITS);
-#else
-  ledcSetup(LEDC_CH_PIN2, BREATH_PWM_FREQ, BREATH_PWM_BITS);
-  ledcAttachPin(PIN2, LEDC_CH_PIN2);
-#endif
-  pin2PwmActive = true;
-}
-
-void writePin1Duty(uint8_t duty) {
-  ensurePin1Pwm();
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcWrite(PIN1, duty);
-#else
-  ledcWrite(LEDC_CH_PIN1, duty);
-#endif
-}
-
-void writePin2Duty(uint8_t duty) {
-  ensurePin2Pwm();
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcWrite(PIN2, duty);
-#else
-  ledcWrite(LEDC_CH_PIN2, duty);
-#endif
-}
-
-void applyState(LightState state) {
-  stopAllPwm();
-  switch (state) {
-    case STATE_RED:
-      setPin(PIN1, false);
-      writePin2Duty(peakDutyFor(MAX_RED_BRIGHT));
-      break;
-    case STATE_YELLOW:
-    case STATE_CONFIRM:
-      setPin(PIN2, false);
-      break;
-    case STATE_GREEN:
-      writePin1Duty(peakDutyFor(MAX_GREEN_BRIGHT));
-      writePin2Duty(peakDutyFor(MAX_GREEN_BRIGHT));
-      break;
-    case STATE_OFF:
-    default:
-      setPin(PIN1, false);
-      setPin(PIN2, false);
-      break;
-  }
-}
-
-void writeYellowPwm(uint8_t duty) {
-  if (pin2PwmActive) {
-    detachPin2Pwm();
-  }
-  setPin(PIN2, false);
-  writePin1Duty(duty);
-}
-
-void applyConfirmYellowSolid() {
-  detachPin2Pwm();
-  setPin(PIN2, false);
-  writePin1Duty(peakDutyFor(MAX_YELLOW_BRIGHT));
-}
-
-void applyConfirmRedPhase(bool redOn) {
-  applyConfirmYellowSolid();
-  if (redOn) {
-    writePin2Duty(peakDutyFor(MAX_RED_BRIGHT));
-  } else {
-    detachPin2Pwm();
-    setPin(PIN2, false);
-  }
-}
-
-#endif
 
 void enterState(LightState state) {
   if (state == currentState) {
@@ -458,14 +315,9 @@ void handleCommand(char cmd) {
 }
 
 void setup() {
-#if TWO_PIN_MODULE
-  pinMode(PIN1, OUTPUT);
-  pinMode(PIN2, OUTPUT);
-#else
   pinMode(PIN_RED, OUTPUT);
   pinMode(PIN_YELLOW, OUTPUT);
   pinMode(PIN_GREEN, OUTPUT);
-#endif
 
   applyState(STATE_OFF);
 
@@ -479,11 +331,7 @@ void setup() {
 #endif
 
   Serial.println(F("Cursor AI Traffic Light Ready (ESP32-C3)"));
-#if TWO_PIN_MODULE
-  Serial.println(F("Module: 2-pin encoded | Commands: Y C G R O"));
-#else
-  Serial.println(F("Module: GND/R/Y/G | Commands: Y C G R O"));
-#endif
+  Serial.println(F("Module: R/Y/G + GND | Commands: Y C G R O"));
 }
 
 void loop() {
