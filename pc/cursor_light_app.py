@@ -161,6 +161,18 @@ def create_tray_icon(daemon):
         daemon.stop()
         icon.stop()
 
+    def on_check_update(_icon, _item):
+        import threading
+
+        from update_checker import run_update_check_ui
+
+        threading.Thread(
+            target=run_update_check_ui,
+            kwargs={"force": True, "notify_if_available": False},
+            daemon=True,
+            name="update-check-manual",
+        ).start()
+
     icon.menu = pystray.Menu(
         pystray.MenuItem(lambda text: status_text(), None, enabled=False),
         pystray.MenuItem(lambda text: listener_status_text(), None, enabled=False),
@@ -182,6 +194,7 @@ def create_tray_icon(daemon):
             on_autostart,
             checked=is_autostart_checked,
         ),
+        pystray.MenuItem("检查更新", on_check_update),
         pystray.MenuItem("退出", on_quit),
     )
     return icon
@@ -206,6 +219,10 @@ def run_gui() -> int:
         daemon = LightDaemon()
         daemon.start()
         icon = create_tray_icon(daemon)
+
+        from update_checker import schedule_startup_update_check
+
+        schedule_startup_update_check()
         icon.run()
         daemon.stop()
         return 0

@@ -9,6 +9,9 @@ from pathlib import Path
 APP_NAME = "CodingLight"
 APP_VERSION = "1.0.0"
 APP_PUBLISHER = "CodingLight"
+GITHUB_REPO_OWNER = "JTKhalil"
+GITHUB_REPO = "AI-RYG"
+SETUP_ASSET_NAME = "CodingLightSetup.exe"
 HOOK_DIR_NAME = "CodingLightHook"
 HOOK_EXE_NAME = "CodingLightHook.exe"
 UNINSTALL_EXE_NAME = "CodingLightUninstall.exe"
@@ -105,3 +108,7 @@ def log_path() -> Path:
 
 def pid_path() -> Path:
     return data_dir() / "daemon.pid"
+
+
+def update_check_cache_path() -> Path:
+    return data_dir() / "update_check.json"
