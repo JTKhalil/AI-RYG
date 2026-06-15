@@ -136,16 +136,30 @@ Hook 可用脚本安装：
 
 ### 硬件接线（ESP32-C3）
 
+> **当前分支** `feature/yfrobot-two-pin-module` 适配 YFROBOT 两线编码红绿灯模块。  
+> 主线 `main` 使用 R/Y/G 各一根线的独立引脚方案，见 [main 分支 README](https://github.com/JTKhalil/AI-RYG/blob/main/README.md#硬件接线esp32-c3)。
+
 板子引出引脚：**GPIO 0–10、20–21**，以及 **3V / 5V / GND**。
 
-| 信号灯 | GPIO |
-|--------|------|
-| 红 | GPIO 4 |
-| 黄 | GPIO 5 |
-| 绿 | GPIO 6 |
-| GND | GND |
+**YFROBOT 两线编码模块**（模块 4P 自上而下：PIN2 / PIN1 / VCC / GND）：
 
-若是共阳模块（COM 接 VCC），固件中将 `LED_ACTIVE_LOW` 改为 `true` 后重新烧录。
+| 模块引脚 | ESP32 |
+|----------|-------|
+| GND | GND |
+| VCC | 3V3 或 5V |
+| PIN1 | GPIO 4 |
+| PIN2 | GPIO 5 |
+
+控制真值表（PIN1 / PIN2）：
+
+| PIN1 | PIN2 | 灯态 |
+|------|------|------|
+| 0 | 0 | 全灭 |
+| 0 | 1 | 红灯 |
+| 1 | 0 | 黄灯 |
+| 1 | 1 | 绿灯 |
+
+确认状态为黄/红交替（两线模块无法黄+红同亮）。思考态沿用 **main 分支原方案**：2s 余弦呼吸 + gamma + PIN1 硬件 PWM（5kHz）。
 
 ### 测试串口
 
@@ -242,7 +256,6 @@ AI-RYG/
 修改 `esp32/ai_traffic_light/ai_traffic_light.ino` 顶部的引脚定义：
 
 ```cpp
-#define PIN_RED    4
-#define PIN_YELLOW 5
-#define PIN_GREEN  6
+#define PIN1  4   // 模块 PIN1
+#define PIN2  5   // 模块 PIN2
 ```
