@@ -77,7 +77,7 @@ def main() -> int:
         print("  1. Arduino IDE → 开发板选 ESP32C3 Dev Module")
         print("  2. USB CDC On Boot = Enabled")
         print("  3. 打开 esp32/ai_traffic_light/ai_traffic_light.ino 并上传")
-        print("  4. 模块 GND/R/Y/G 分别接 GND、GPIO4、GPIO5、GPIO6")
+        print("  4. 两线模块：GND/VCC/PIN1/PIN2 接 GND、3V3、GPIO4、GPIO5")
         print("  5. 上传完成后按一下 ESP32 的 RESET，再重新运行本脚本")
         return 1
 
